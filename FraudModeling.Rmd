@@ -1,0 +1,633 @@
+---
+jupyter:
+  jupytext:
+    text_representation:
+      extension: .Rmd
+      format_name: rmarkdown
+      format_version: '1.0'
+      jupytext_version: 0.8.6
+  kernelspec:
+    display_name: Python 3
+    language: python
+    name: python3
+---
+
+```{python}
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+sns.set_style("darkgrid", {"axes.facecolor": ".9"})
+sns.set(font_scale=2)
+# %matplotlib inline
+```
+
+<font color='green'; size=4em>
+Read the fraud data using Pandas
+</font>
+
+```{python}
+fraud_df = pd.read_csv('Candidate_tech_evaluation_candidate_copy_data science_fraud.csv',
+                       header=0, 
+                       index_col='Unnamed: 0')
+```
+
+```{python}
+def get_var_category(series):
+    '''This function provides user readable values of the data types of a dataframe'''
+    unique_count = series.nunique(dropna=False)
+    total_count = len(series)
+    if pd.api.types.is_numeric_dtype(series):
+        return 'Numerical'
+    elif pd.api.types.is_datetime64_dtype(series):
+        return 'Date'
+    elif unique_count==total_count:
+        return 'Text (Unique)'
+    else:
+        return 'Categorical'
+
+def print_categories(df):
+    for column_name in df.columns:
+        print(column_name, ": ", get_var_category(df[column_name]))
+```
+
+```{python}
+print_categories(fraud_df) 
+```
+
+<font color='green'; size=4em>
+The timestamp columns are coming as categorical. Convert those to Date type.
+</font>
+
+```{python}
+fraud_df['purchase_time'] = pd.to_datetime(fraud_df['purchase_time'])
+fraud_df['signup_time'] = pd.to_datetime(fraud_df['signup_time'])
+```
+
+<font color='green'; size=4em>
+Convert the class column to categorical.
+</font>
+
+```{python}
+fraud_df['class'] = fraud_df['class'].astype('category')
+```
+
+```{python}
+fraud_df['class'].value_counts()
+```
+
+<font color='green'; size=4em>
+As expected, the classes are imbalanced. However, the imbalance is not as severe as to apply a class balancing algorithm. We may want to try applying it in the next steps to see if it helps.
+</font>
+
+
+<font color='green'; size=4em>
+Read the IpAddress to Country dataset using Pandas and get field types
+</font>
+
+```{python}
+iptocountry_df = pd.read_excel('Candidate_tech_evaluation_candidate_copy_datascience_IpAddress_to_Country.xlsx',header=0)
+```
+
+```{python}
+print_categories(iptocountry_df)
+```
+
+<font color='green'; size=4em>
+We can bring the country field from the IpAffress to Country dataset into the Fraud dataset by joining based on whether the IP address is between the lower and upper bound. Since Pandas merge and join methods don't allow conditional matching, we will have to revert to the apply method. Once, we join, we will substitute the null country fields with Unknown.
+</font>
+
+```{python}
+def find_country(ip):
+    ''' Return country if the ip address falls between lower and upper bounds of a given country '''
+    country =  iptocountry_df[(ip >= iptocountry_df['lower_bound_ip_address']) & 
+                          (ip <= iptocountry_df['upper_bound_ip_address'])]['country']
+    return None if country.empty else country.values[0]
+```
+
+```{python}
+fraud_df['country'] = fraud_df['ip_address'].apply(lambda ip: find_country(ip))
+```
+
+```{python}
+fraud_df.loc[fraud_df['country'].isnull(),'country'] = 'Unknown'
+```
+
+### EDA and Feature Engineering
+
+
+<font color='green'; size=4em>
+Let us first look at the purchase value.
+</font>
+
+```{python}
+bins = np.arange(0, 140, 5)
+g = sns.FacetGrid(fraud_df, col="class",size=10)
+g = g.map(plt.hist, "purchase_value",bins=bins).set(yticks=np.arange(0,20000,1000))
+g
+```
+
+<font color='green'; size=4em>
+From the above plot, it appears that the fraudsters don't do big \$ transactions. This may be because small transactions are more likely to go unnoticed. 
+For the transactions done by them, there appears to be a ceiling between \$100 and \$200.
+</font>
+
+
+<font color='green'; size=4em>
+Let us look at the difference between the signup and purchase times. It is possible that fraudsters use some bot to signup right before making a purchase. We will convert the time difference to seconds to compare the classes.
+</font>
+
+```{python}
+fraud_df['diff_bet_signup_purchase'] = (fraud_df['purchase_time'] - fraud_df['signup_time']).astype('timedelta64[s]')
+```
+
+```{python}
+bins = np.arange(0, 20000, 10)
+g = sns.FacetGrid(fraud_df, col="class",size=10)
+g = g.map(plt.hist, "diff_bet_signup_purchase")
+g
+```
+
+```{python}
+fraud_df['purchaseaftersignup_flag'] = np.where((fraud_df['diff_bet_signup_purchase'] >= 0) & 
+                                                (fraud_df['diff_bet_signup_purchase'] <= 60), 1, 0)
+```
+
+```{python}
+pd.crosstab(fraud_df['purchaseaftersignup_flag'],fraud_df['class'])
+```
+
+<font color='green'; size=4em>
+From the above visual, we can see that most fraud transactions are likely to happen in the first minute of the signup. To accomodate this behaviour, we created a variable called 'purchaseaftersignup_flag'.
+
+
+Let us look at age now.
+</font>
+
+```{python}
+bins = np.arange(0, 70, 5)
+g = sns.FacetGrid(fraud_df, col="class",size=10)
+g = g.map(plt.hist, "age", bins=bins )
+#.set(xlim=(0,175000),yticks=np.arange(0,6000,500))
+g
+```
+
+```{python}
+g = sns.FacetGrid(fraud_df, row="class",size=5)
+g = g.map(sns.boxplot, "age", order=["0", "1"])
+```
+
+<font color='green'; size=4em>
+From the above plots, for age we don't see a difference between the two groups (fraud vs. no-fraud) based on age. So, we are not sure whether this feature will make a difference in predicting fraud transactions.
+
+Let us look at broswer variable.
+</font>
+
+```{python}
+pd.crosstab(fraud_df['browser'],fraud_df['class'],normalize='columns')*100
+```
+
+<font color='green'; size=4em>
+    Certain small differences exist by browser. For example, Chrome is more used by fraudster whereas, IE is less likely used. Let us look at at source.
+</font>
+
+```{python}
+pd.crosstab(fraud_df['source'],fraud_df['class'],normalize='columns')*100
+```
+
+<font color='green'; size=4em>
+As expected Direct channel is more widely used by fraudsters. Let us check on Gender next.
+</font>
+
+```{python}
+pd.crosstab(fraud_df['sex'],fraud_df['class'],normalize='columns')*100
+```
+
+<font color='green'; size=4em>
+    Slight differences by gender, but, not substantial.
+</font>
+
+```{python}
+def reset_index(df):
+  '''Returns DataFrame with index as columns'''
+  index_df = df.index.to_frame(index=False)
+  df = df.reset_index(drop=True)
+  #  In merge is important the order in which you pass the dataframes
+  # if the index contains a Categorical. 
+  # pd.merge(df, index_df, left_index=True, right_index=True) does not work
+  return pd.merge(index_df, df, left_index=True, right_index=True)
+```
+
+<font color='green'; size=4em>
+    Let us see whether differences by country exist. We will take columnwise proportions for each of class=0 and class=1, and find difference between the class percentages for each country.
+</font>
+
+```{python}
+country_df = reset_index(pd.crosstab(fraud_df['country'],fraud_df['class'],normalize='columns'))
+country_df.columns = ['country','0','1']
+```
+
+```{python}
+country_df['difference'] = (country_df['1'] - country_df['0'])*100
+country_df.sort_values(by='difference',ascending=False,inplace=True)
+country_df.head(10)
+```
+
+<font color='green'; size=4em>
+    We can see that proportionally, more fraud transactions happen from the United States. So, we can leverage country as a feature in our models. Let us look at transaction count by device. As mentioned in the problem text, two transactions from the same device id means that same physical device was used to purchase. So, counting the number of transactions done from the device can help us in predicting fraud.
+</font>
+
+```{python}
+device_df = reset_index(pd.crosstab(fraud_df['device_id'],fraud_df['class']))
+device_df.columns = ['device_id','0','1']
+device_df['trancount'] = device_df['0'] + device_df['1']
+device_df.sort_values(by='trancount',ascending=False,inplace=True)
+device_df.head()
+```
+
+<font color='green'; size=4em>
+    As expected, we can see that fraudsters make a relatively large % of transactions from the same device. We can create a function to calculate count features for each of device id, country and ip_address.
+</font>
+
+```{python}
+# count # of transactions done from that device so far
+def get_count(df,col):
+    df.sort_values('purchase_time',ascending=True,inplace=True)
+    temp = pd.DataFrame(df.groupby(col)['user_id'].count())
+    temp.reset_index(inplace=True)
+    colname = 'countoftranby_' + str(col)
+    temp.rename(columns={'user_id':colname},inplace=True)
+    df = df.merge(temp,on=col,how='left')
+    return df
+```
+
+```{python}
+fraud_df = get_count(fraud_df,'device_id')
+fraud_df = get_count(fraud_df,'country')
+fraud_df = get_count(fraud_df,'ip_address')
+```
+
+<font color='green'; size=4em>
+    Additional country logic
+</font>
+
+```{python}
+temp2 = pd.DataFrame(fraud_df.groupby('country')['user_id'].count())
+temp2.reset_index(inplace=True)
+colname = 'countoftranby_' + str('country')
+temp2.rename(columns={'user_id':colname},inplace=True)
+```
+
+```{python}
+len(np.unique(fraud_df.loc[:,'country']))
+```
+
+```{python}
+len(np.unique(fraud_df.loc[fraud_df['countoftranby_country']<=100,'country']))
+```
+
+<font color='green'; size=4em>
+    From the above, we can see that there are 177 countries in our dataset, but, 122 of them have 100 or fewer transactions coming from them. We can think of combining these countries to reduce dimensionality of our dataset.
+</font>
+
+```{python}
+def collapse_country(country):
+    country = temp2[(temp2['country'] == country) & (temp2['countoftranby_country']>= 100)]
+    return 'less_active' if country.empty else country['country'].values[0]
+```
+
+```{python}
+fraud_df['countrycollapsed'] = fraud_df['country'].apply(lambda country: collapse_country(country))
+```
+
+<font color='green'; size=4em>
+    Date specific feature extraction.
+</font>
+
+```{python}
+def get_date_features(df):
+    '''create features 'day_of_the_week, DOTW' and 'week_of_the_year, WOTY' from both signup and purchase dates.'''
+    df['day_of_signup'] = pd.to_datetime(df['signup_time']).dt.day_name()
+    df['day_of_purchase'] = pd.to_datetime(df['purchase_time']).dt.day_name()
+    df['week_of_signup'] = pd.to_datetime(df['signup_time']).dt.weekofyear
+    df['week_of_purchase'] = pd.to_datetime(df['purchase_time']).dt.weekofyear
+    return df
+```
+
+```{python}
+fraud_df = get_date_features(fraud_df)
+```
+
+### Preprocessing
+
+
+<font color='green'; size=4em>
+    In the preprocessing section, we will encode categorical variables and generate numerical vectors that our models need.
+</font>
+
+```{python}
+from sklearn.model_selection import GridSearchCV, train_test_split
+from sklearn import preprocessing
+from sklearn.ensemble import RandomForestClassifier
+import xgboost as xgb
+from xgboost import XGBClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn import svm
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.naive_bayes import GaussianNB
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, roc_curve, precision_score, recall_score, f1_score, auc, confusion_matrix
+```
+
+```{python}
+def labelencoding(df, col):
+        le = preprocessing.LabelEncoder().fit(df[col])
+        col_t = str(col) + '_le'
+        df[col_t] = le.transform(df[col])
+        return df
+```
+
+```{python}
+cols_to_encode = ['source','browser','sex','countrycollapsed','day_of_signup','day_of_purchase']
+for col in cols_to_encode:
+    fraud_df = labelencoding(fraud_df,col)
+```
+
+```{python}
+# drop unwanted columns
+model_df = fraud_df[['purchase_value','purchaseaftersignup_flag','countoftranby_device_id','age',
+                          'countoftranby_ip_address','source_le','browser_le','sex_le',
+                         'countrycollapsed_le','day_of_signup_le','day_of_purchase_le','class']]
+```
+
+<font color='green'; size=4em>
+    We have the model dataframe ready now.
+</font>
+
+
+### Modeling
+
+
+<font color='green'; size=4em>
+    We will build two types of modeling exercises. One is, we will apply a bunch of models from sklearn and find the best model. Next, we will use H2O Open source to develop a bunch of models using it/'s automated machine learning. One of the advantages of h2o based model is then run in parallel on a MapReduce or Spark cluster and can make scoring much faster. With Sklearn, it will be a single-threaded operation out of the box.
+</font>
+
+```{python}
+#train and test data split
+def trainTestSplit(df, test_size, random_state):
+    '''Split the dataframe into train and test return corresponding X and y variables.'''
+    X = df.iloc[:, :-1]
+    y = df.iloc[:, -1]
+    x_train, x_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=random_state)
+    return x_train, x_test, y_train, y_test
+```
+
+```{python}
+def multi_modeling(x_train, y_train, x_test, y_test):
+    '''This function will train a bunch of classifiers and returns their metrics'''
+    metricsResults = []
+    models = []
+    tprResults = []
+    fprResults = []
+    predResults = []
+    #classifiers = [rf, xgbc]
+    classifiersName = ['MLP','DT CART', 'LDA',
+                 #      'SVC (Linear kernal)',
+                 #  'SVC (RBF)', 'SVC (Polynomial)', 
+                       'Random Forest', 'k-Nearest Neigbors', 
+                   'Naive Bayes (Gaussian)', 'Logistic Regression', 'xgboost']
+
+    classifiers = [MLPClassifier(solver='lbfgs', alpha=1e-5, 
+                             hidden_layer_sizes=(100, 100), random_state=1),
+                DecisionTreeClassifier(criterion = 'entropy'),
+                LinearDiscriminantAnalysis(n_components=50),
+               #  svm.SVC(kernel='linear', C=1.0, tol=1e-3,probability=True),
+               # svm.SVC(kernel='rbf', C=100.0, tol=1e-3,probability=True),
+               # svm.SVC(kernel='poly', C=100.0, tol=1e-3, degree=2, coef0=100,probability=True),
+                RandomForestClassifier(n_estimators=100, max_depth=5, criterion='gini', max_features='log2',
+                                min_samples_split=3,random_state=0, n_jobs=-1),
+                KNeighborsClassifier(n_neighbors=5),
+                GaussianNB(),
+                LogisticRegression(C=100.0),
+                xgb.XGBClassifier(max_depth=3, learning_rate=0.1, n_estimators=100, objective='binary:logistic',
+                             booster='gbtree', reg_alpha=0, reg_lambda=1, random_state=0, n_jobs=4)]
+
+    colnames = ['accuracy', 'precision', 'recall', 'f1', 'auc', 'confusion_matrix']
+    
+
+    for i in range(len(classifiers)):
+        metricsResult, model, pred, tpr, fpr = train_and_test_models(classifiers[i],x_train,y_train,x_test,y_test)
+        metricsResults.append(metricsResult)
+        models.append(model)
+        predResults.append(pred)
+        tprResults.append(tpr)
+        fprResults.append(fpr)
+        
+    
+    metricsResults = [item for sublist in metricsResults for item in sublist]
+    metricsResults = pd.DataFrame({'Metrics': colnames, 
+                                   '{}'.format(classifiersName[0]): metricsResults[0],
+                                   '{}'.format(classifiersName[1]): metricsResults[1],
+                                   '{}'.format(classifiersName[2]): metricsResults[2],
+                                   '{}'.format(classifiersName[3]): metricsResults[3],
+                                   '{}'.format(classifiersName[4]): metricsResults[4],
+                                   '{}'.format(classifiersName[5]): metricsResults[5],
+                                   '{}'.format(classifiersName[6]): metricsResults[6],
+                                   '{}'.format(classifiersName[7]): metricsResults[7]
+                                 })
+
+    return metricsResults, models, predResults, tprResults, fprResults, classifiersName
+```
+
+```{python}
+def train_and_test_models(classifier,x_train,y_train,x_test,y_test):
+    '''Takes a classifier as an arugment and returns metrics based on test data'''
+    metrics = [] 
+    model = classifier
+    print (model)
+    model.fit(x_train, y_train)
+    y_hat = model.predict(x_test)
+    y_hat_proba = model.predict_proba(x_test)[:, 1]
+    tpr, fpr, thresholds = roc_curve(y_test, y_hat_proba)
+    metrics.append((accuracy_score(y_test, y_hat), precision_score(y_test, y_hat), recall_score(y_test, y_hat),
+             f1_score(y_test, y_hat), auc(tpr, fpr), confusion_matrix(y_test, y_hat)))
+    #print (len(metrics))
+    return (metrics, model, y_hat, tpr, fpr)
+```
+
+```{python}
+X_train, X_test, y_train, y_test = trainTestSplit(model_df, test_size=0.2, random_state=42)
+metricsResults, models, predResults, tprResults, fprResults, classifierNames = multi_modeling(X_train, y_train, X_test, y_test)
+```
+
+```{python}
+metricsResults
+```
+
+```{python}
+def plot_ROC(tpr, fpr, classifierNames):
+    collist = ['g','b','r','y','k','w','m','c']
+    plt.figure(figsize=(16, 16))
+    plt.plot([0, 1], [0, 1], c='k', linestyle='--')
+    for i in range(len(classifierNames)):
+        lab = str(classifierNames[i]) + ' AUC: {:.4f}'
+        plt.plot(tpr[i], fpr[i], label=lab.format(auc(tpr[i], fpr[i])), c=collist[i], linestyle='-')
+    plt.xlabel('False positive rate')
+    plt.ylabel('True positive rate')
+    plt.title('Fraud detection - ROC')
+    plt.legend(loc='lower right')
+    plt.plot()      
+```
+
+```{python}
+plot_ROC(tprResults, fprResults,classifierNames)
+```
+
+<font color='green'; size=4em>
+    Based on the above, it appears that Multi Layered Perceptron and Xgboost models seem to have the highest AUC on a test dataset. Given that xgboost is more versatile with features of various types, we will consider Xgboost as our best model coming out of sklearn. One thing to note, is Logistic Regression is performing relatively well. Given that logistic regression is a much faster model, we can consider it as well if speed is a criterion.
+</font>
+
+
+<font color='green'; size=4em>
+    H2O is another versatile open source tool that allows deploying models that can run on JVMs. We will use automl method from this tool to provide the best model. We will run H2O in the local mode.
+</font>
+
+```{python}
+import h2o
+from h2o.automl import H2OAutoML
+```
+
+```{python}
+h2o.init()
+```
+
+```{python}
+h2o_model_df = h2o.H2OFrame(model_df)
+# Split the data into Train/Test/Validation with Train having 80% and test having 20%
+train,test = h2o_model_df.split_frame(ratios = [.8], seed = 1234)
+```
+
+```{python}
+# Identify predictors and response
+X = train.columns
+y = "class"
+X.remove(y)
+
+# For binary classification, response should be a factor
+train[y] = train[y].asfactor()
+test[y] = test[y].asfactor()
+```
+
+```{python}
+# Run AutoML for 20 base models (limited to 1 hour max runtime by default)
+aml = H2OAutoML(max_models=20, seed=1)
+aml.train(x=X, y=y, training_frame=train)
+
+# View the AutoML Leaderboard
+lb = aml.leaderboard
+lb.head()  # Print all rows instead of default (10 rows)
+```
+
+```{python}
+# Predict
+best_model = aml.leader
+preds = best_model.predict(test)
+predictions = preds.as_data_frame(use_pandas=True)
+```
+
+<font color='green'; size=4em>
+    From the above, Xgboost seems to have the best AUC immediately followed by the Deep Learning (Multi-Layered Perceptron). The results are quite similar to what we got out of the sklearn model. One of the advantages of H2O is, creating stacked ensemble models is easy. Let us see how the stacked ensemble model for this use case performs. 
+</font>
+
+```{python}
+# Get model ids for all models in the AutoML Leaderboard
+model_ids = list(aml.leaderboard['model_id'].as_data_frame().iloc[:,0])
+# Get the "All Models" Stacked Ensemble model
+se = h2o.get_model([mid for mid in model_ids if "StackedEnsemble_AllModels" in mid][0])
+# Get the Stacked Ensemble metalearner model
+metalearner = h2o.get_model(se.metalearner()['name'])
+print ("Metalearner model is :{}".format(metalearner))
+metalearner.std_coef_plot()
+```
+
+<font color='green'; size=4em>
+   Let us see the performance of the best H2O model on the test data. We will H2O functions first followed by sklearn function. 
+</font>
+
+```{python}
+best_model.model_performance(test)
+```
+
+```{python}
+#Here we evaluate the model
+import sklearn
+from sklearn import metrics
+test_df = test.as_data_frame(use_pandas=True)
+test_df
+y_test = test_df["class"]
+predictions = predictions.values[:,2]
+predictions
+sklearn.metrics.roc_auc_score(y_test, predictions)
+```
+
+<font color='green'; size=4em>
+    Sklearn shows the same AUC as h2o model performance function.
+</font>
+
+
+<font color='blue'; size=4em>
+    <b>
+    Given the simplicity associated with deploying H2O models, we will consider the best H2O AutoML model named "XGBoost_grid_1_AutoML_20190127_141419_model_3", our final model.
+    </b>
+</font>
+
+
+### Next Steps
+
+
+<font color='green'; size=4em>
+    <b>
+    - Class balancing using various techniques.
+    </b>
+    
+    <br>
+    In this case, given the ratio of positive classes to negative classes, we didn't balance classes. However, we could try doing so to see it improves performance.
+    </br>
+</font>
+
+
+<font color='green'; size=4em>
+    <b>
+    - Adding new features.
+    </b>    
+    <br>
+    Given the time we had to complete this project, we didn't try additional feature creation. Using the dataset, we could create time specific features to see if frauds are likely to happen at certain time of the day. Several other features could be created by adding external datasets such as IP to zip mapping and then leveraging Experian report of internet frauds by zipcode. Another way could be the company can start capturing zip code of the location where the order was asked to be shipped. In the future, the fraudsters are going to be sophisticated and may use technologies such as VPN to hide tracing them. In such a case, Electronica needs to stay ahead of the competition. Electronica could employ streaming fraud analytics to minimize losses resulting from fraudulant transactions.
+    </br>
+</font>
+
+```{python}
+#fraud_df['cumcountoftran'] = fraud_df.groupby('device_id').cumcount()+1
+```
+
+```{python}
+# Get the average purchase price of fraud transaction
+fraud_df[fraud_df['class']==1]['purchase_value'].mean()
+```
+
+```{python}
+# Get the average purchase price of fraud transaction
+fraud_df[fraud_df['class']==0]['purchase_value'].mean()
+```
+
+ <font color='green'; size=4em>
+    <b>
+        - Business valuation in setting thresholds.
+    </b>
+    
+    <br>
+    In solving the above problem, we treated both false positives and false negatives to be of equal importance. However, in real life, each of these two have a different cost associated with it. Each of the false positive has a cost of \$8 (it inconveniences the Electronica customers whose valid transactions are flagged). The cost of false negative is \$37 as shown above. The valu of the True positive is also ~\$37 and the value of the true negative is same as cost of the false negative. Using the above numbers, we can develop a better threshold from a business value perspective rather than relying solely on best AUC thresholds.
+    </br>
+</font>
+    
